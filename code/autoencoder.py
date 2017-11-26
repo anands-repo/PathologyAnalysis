@@ -31,12 +31,17 @@ parser.add_argument("--batch_size", action="store", type=int, help="Batch size",
 parser.add_argument("--output_prefix", action="store", help="Prefix of file in which to store component estimates", dest="output_prefix", required=True);
 parser.add_argument("--learning_rate", action="store", help="Learning rate", dest="lr", default=1e-3, type=float);
 parser.add_argument("--composition_weight", action="store", help="weight", dest="weight", default=1.0, type=float);
+parser.add_argument("--init_exp_vector", action="store", help="Initialization for expression vectors", dest="init_exp_vector");
 
 args = parser.parse_args();
 
 samples = np.load(args.samples);
 
 encoder = autoencoder(args.num_components, samples.shape[1]);
+
+if args.init_exp_vector is not None:
+    init_vectors = np.load(args.init_exp_vector);
+    encoder.synthesis.data = torch.from_numpy(init_vectors).float();
 
 num_samples = samples.shape[0];
 
