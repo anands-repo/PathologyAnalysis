@@ -9,6 +9,25 @@ def classification_accuracy(labels, targets):
     num_correct = np.add.reduce(np.array(labels == targets, dtype=np.float32));
     return num_correct / labels.shape[0];
 
+class neural_network(torch.nn.Module):
+    def __init__(self, dim, hidden):
+        super().__init__();
+
+        self.linear1 = torch.nn.Linear(dim, hidden);
+        self.linear2 = torch.nn.Linear(hidden, 2);
+
+        self.linear1.weight.data.normal_(0.0,1.0);
+        self.linear1.bias.data.fill_(1.1);
+        self.linear2.weight.data.normal_(0.0,1.0);
+        self.linear2.bias.data.fill_(1.1);
+        self.dropout = torch.nn.Dropout(p=0.5);
+
+    def forward(self, tensor):
+        o1 = torch.nn.functional.relu(self.linear1(tensor));
+        o2 = self.dropout(self.linear2(o1));
+
+        return o2;
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description = "Train and test a pathology classifier");
 
@@ -80,16 +99,7 @@ if __name__ == "__main__":
     vectors          = all_vectors[indices];
     labels           = all_labels[indices];
 
-    print("Read gene expression file %s", args.expression);
-
-    """ Create a simple neural network """
-    network = torch.nn.Sequential( \
-                torch.nn.Linear(vectors[0].shape[0], 4096), \
-                torch.nn.ReLU(), \
-                torch.nn.Linear(4096, 2), \
-    );
-
-    optimizer = torch.optim.Adam(network.parameters(), lr=args.learning_rate);
+    print("Read gene expression file", args.expression);
 
     ftrain, ftest, fval = list(map(float, args.train_test_val.split(",")));
     ntrain              = int(all_vectors.shape[0] * ftrain);
@@ -106,6 +116,19 @@ if __name__ == "__main__":
 
         max_accuracy  = -1;
         best_model    = None;
+        num_hidden    = 256;
+
+        """ Create a simple neural network """
+        network = neural_network(vectors[0].shape[0], num_hidden); 
+        # torch.nn.Sequential( \
+        #             torch.nn.Linear(vectors[0].shape[0], num_hidden), \
+        #             torch.nn.Tanh(), \
+        #             torch.nn.Linear(num_hidden, 2), \
+        # );
+
+        network.cuda();
+
+        optimizer = torch.optim.Adam(network.parameters(), lr=args.learning_rate);
 
         # Train-test iterations
         for j in range(args.num_epochs):
@@ -120,6 +143,8 @@ if __name__ == "__main__":
 
             num_batches = decide_num_batches(args.batch_size, train_vectors);
 
+            network.train(True);
+
             # Train iterations
             for k in range(num_batches):
                 batch_start = k * args.batch_size;
@@ -127,8 +152,8 @@ if __name__ == "__main__":
 
                 input_tensors = train_vectors[batch_start:batch_end];
                 input_labels  = train_labels[batch_start:batch_end];
-                predictions   = network(torch.autograd.Variable(torch.from_numpy(input_tensors).float()));
-                targets       = torch.autograd.Variable(torch.from_numpy(input_labels));
+                predictions   = network(torch.autograd.Variable(torch.from_numpy(input_tensors).float().cuda()));
+                targets       = torch.autograd.Variable(torch.from_numpy(input_labels).cuda());
 
                 criterion     = torch.nn.CrossEntropyLoss();
                 loss_function = criterion(predictions, targets);
@@ -137,28 +162,36 @@ if __name__ == "__main__":
                 loss_function.backward();
                 optimizer.step();
 
+            network.train(False);
+
+            # Train accuracy
+            train_predictions = network(torch.autograd.Variable(torch.from_numpy(train_vectors)).float().cuda());
+            train_accuracy    = classification_accuracy(train_predictions.cpu().data.numpy(), train_labels);
+
             # Testing
-            test_predictions = network(torch.autograd.Variable(torch.from_numpy(test_vectors)).float());
-            test_accuracy    = classification_accuracy(test_predictions.data.numpy(), test_labels);
+            test_predictions = network(torch.autograd.Variable(torch.from_numpy(test_vectors)).float().cuda());
+            test_accuracy    = classification_accuracy(test_predictions.cpu().data.numpy(), test_labels);
 
             if test_accuracy > max_accuracy:
                 max_accuracy = test_accuracy;
                 best_model   = deepcopy(network.state_dict());
 
-            print("Completed epoch %d, obtained test accuracy %f"%(j,test_accuracy));
+            print("Completed epoch %d, obtained train, test accuracy %f,%f"%(j,train_accuracy,test_accuracy));
 
         # Validation iterations
         val_model = network.load_state_dict(best_model);
 
-        test_predictions = network(torch.autograd.Variable(torch.from_numpy(test_vectors)));
-        test_accuracy    = classification_accuracy(test_predictions.data.numpy(), test_labels);
+        network.train(False);
+
+        test_predictions = network(torch.autograd.Variable(torch.from_numpy(test_vectors).float().cuda()));
+        test_accuracy    = classification_accuracy(test_predictions.cpu().data.numpy(), test_labels);
 
         print("Fold %d sanity check: Validation model has test accuracy %f"%(i, test_accuracy));
 
-        val_predictions = network(torch.autograd.Variable(torch.from_numpy(val_vectors)));
-        val_accuracy    = classification_accuracy(val_predictions.data.numpy(), val_labels);
+        val_predictions = network(torch.autograd.Variable(torch.from_numpy(val_vectors).float().cuda()));
+        val_accuracy    = classification_accuracy(val_predictions.cpu().data.numpy(), val_labels);
 
-        print("Fold %d has validation accuracy %f"%(val_accuracy));
+        print("Fold %d has validation accuracy %f"%(i, val_accuracy));
 
         # Circular right shift all vectors and labels by nval items
         vectors = np.roll(vectors, nval);
