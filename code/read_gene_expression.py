@@ -24,7 +24,7 @@ class gene_expression:
             self.data[key] = np.array(value);
 
     """ Get expression data for a set of patients for a set of genes """
-    def gene_specific_expressions(self, patient_ids, gene_ids):
+    def gene_specific_expression(self, patient_ids, gene_ids):
         gene_indices = np.array([i for i, g in enumerate(self.genes) if g in gene_ids]);
         expr_tensor  = [];
 

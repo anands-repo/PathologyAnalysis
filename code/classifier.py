@@ -10,23 +10,42 @@ def classification_accuracy(labels, targets):
     return num_correct / labels.shape[0];
 
 class neural_network(torch.nn.Module):
-    def __init__(self, dim, hidden):
+    def __init__(self, dim, num_layers=2, hidden=256):
         super().__init__();
 
-        self.linear1 = torch.nn.Linear(dim, hidden);
-        self.linear2 = torch.nn.Linear(hidden, 2);
+        self.layers = [];
 
-        self.linear1.weight.data.normal_(0.0,1.0);
-        self.linear1.bias.data.fill_(1.1);
-        self.linear2.weight.data.normal_(0.0,1.0);
-        self.linear2.bias.data.fill_(1.1);
-        self.dropout = torch.nn.Dropout(p=0.5);
+        linear = torch.nn.Linear(dim, hidden if num_layers > 1 else 2);
+        linear.weight.data.normal_(0.0,0.1);
+        linear.bias.data.fill_(0.1);
+
+        self.layers.append(linear);
+
+        if num_layers > 1:
+            for i in range(num_layers-2):
+                linear = torch.nn.Linear(hidden, hidden);
+                linear.weight.data.normal_(0.0,0.1);
+                linear.bias.data.fill_(0.1);
+
+                self.layers.append(linear);
+
+            linear = torch.nn.Linear(hidden, 2);
+            linear.weight.data.normal_(0.0,0.1);
+            linear.bias.data.fill_(0.1);
+
+            self.layers.append(linear);
+
+        for i, linear in enumerate(self.layers):
+            setattr(self, "linear"+ str(i), linear);
 
     def forward(self, tensor):
-        o1 = torch.nn.functional.relu(self.linear1(tensor));
-        o2 = self.dropout(self.linear2(o1));
+        o = tensor;
 
-        return o2;
+        for i, layer in enumerate(self.layers):
+            o_ = layer(o);
+            o  = o_ if i == len(self.layers)-1 else torch.nn.functional.relu(o_);
+
+        return o;
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description = "Train and test a pathology classifier");
@@ -38,12 +57,14 @@ if __name__ == "__main__":
     parser.add_argument("--marker_files", action="store", help="Comma-separated marker gene files", dest="marker_files", required=False);
     parser.add_argument("--train_test_val", action="store", help="Comma-separated train,test,validation split", dest="train_test_val", default="0.7,0.1,0.2");
     parser.add_argument("--num_folds", action="store", help="Number of folds of cross-validation to perform", dest="num_folds", type=int, default=1);
-    parser.add_argument("--classifier_type", action="store", choices=["NN, DT, RF"], help="Type of classifier to use", dest="type", default="NN");
+    parser.add_argument("--classifier_type", action="store", choices=["NN, RF"], help="Type of classifier to use", dest="type", default="NN");
     parser.add_argument("--use_marker_genes", action="store_true", help="Turn on marker gene usage", dest="use_marker_genes", default=False);
     parser.add_argument("--train_marker_coefficients", action="store_true", help="Train marker coefficients during training", dest="train_coeffs", default=False);
     parser.add_argument("--learning_rate", action="store", dest="learning_rate", help="Learning rate", default=1e-4, type=float);
     parser.add_argument("--batch_size", action="store", type=int, dest="batch_size", help="Batch size to use for training", default=10);
     parser.add_argument("--num_epochs", action="store", type=int, dest="num_epochs", help="Number of epochs to train", default=10);
+    parser.add_argument("--num_layers", action="store", type=int, dest="num_layers", help="If using a neural network, how many layers", default=2);
+    parser.add_argument("--num_hidden", action="store", type=int, dest="num_hidden", help="If using a neural network, how many hidden units", default=2);
 
     args = parser.parse_args();
 
@@ -87,11 +108,31 @@ if __name__ == "__main__":
     """ Read expression file and obtain expressions for every patient """
     dataset = reader(args.expression);
 
-    positive_vectors = dataset.gene_expression(pos_ids);
-    positive_labels  = np.array([1] * positive_vectors.shape[0]);
-    negative_vectors = dataset.gene_expression(neg_ids);
-    negative_labels  = np.array([0] * negative_vectors.shape[0]);
+    positive_vectors = [];
+    negative_vectors = [];
 
+    if args.use_marker_genes:
+        pos_vectors = [];
+        neg_vectors = [];
+
+        for marker_list in marker_lists:
+            expression_vectors_pos = dataset.gene_specific_expression(pos_ids, marker_list);
+            expression_vectors_neg = dataset.gene_specific_expression(neg_ids, marker_list);
+
+            expression_vectors_pos = np.reshape(np.add.reduce(expression_vectors_pos, axis=1), (expression_vectors_pos.shape[0],1));
+            expression_vectors_neg = np.reshape(np.add.reduce(expression_vectors_neg, axis=1), (expression_vectors_neg.shape[0],1));
+
+            pos_vectors.append(expression_vectors_pos)
+            neg_vectors.append(expression_vectors_neg);
+
+        positive_vectors = np.concatenate(pos_vectors, axis=1);
+        negative_vectors = np.concatenate(neg_vectors, axis=1);
+    else:
+        positive_vectors = dataset.gene_expression(pos_ids);
+        negative_vectors = dataset.gene_expression(neg_ids);
+
+    positive_labels  = np.array([1] * positive_vectors.shape[0]);
+    negative_labels  = np.array([0] * negative_vectors.shape[0]);
     all_vectors      = np.concatenate([positive_vectors, negative_vectors]);
     all_labels       = np.concatenate([positive_labels, negative_labels]);
     indices          = np.arange(all_vectors.shape[0]);
@@ -106,6 +147,11 @@ if __name__ == "__main__":
     ntest               = int(all_vectors.shape[0] * ftest);
     nval                = all_vectors.shape[0] - (ntrain + ntest);
 
+    """ Create a simple neural network """
+    num_hidden          = 256;
+
+    average_validation  = 0;
+
     for i in range(args.num_folds):
         train_vectors = vectors[:ntrain];
         train_labels  = labels[:ntrain];
@@ -116,16 +162,8 @@ if __name__ == "__main__":
 
         max_accuracy  = -1;
         best_model    = None;
-        num_hidden    = 256;
 
-        """ Create a simple neural network """
-        network = neural_network(vectors[0].shape[0], num_hidden); 
-        # torch.nn.Sequential( \
-        #             torch.nn.Linear(vectors[0].shape[0], num_hidden), \
-        #             torch.nn.Tanh(), \
-        #             torch.nn.Linear(num_hidden, 2), \
-        # );
-
+        network = neural_network(vectors[0].shape[0], num_layers=args.num_layers, hidden=args.num_hidden); 
         network.cuda();
 
         optimizer = torch.optim.Adam(network.parameters(), lr=args.learning_rate);
@@ -193,6 +231,10 @@ if __name__ == "__main__":
 
         print("Fold %d has validation accuracy %f"%(i, val_accuracy));
 
+        average_validation += val_accuracy;
+
         # Circular right shift all vectors and labels by nval items
-        vectors = np.roll(vectors, nval);
-        labels  = np.roll(labels, nval);
+        vectors = np.roll(vectors, nval, axis=0);
+        labels  = np.roll(labels, nval, axis=0);
+
+    print("Average cross-validation accuracy = %f"%(average_validation/args.num_folds));
