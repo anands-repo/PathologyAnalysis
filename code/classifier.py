@@ -3,9 +3,10 @@ import torch
 import argparse
 from read_gene_expression import gene_expression as reader
 from copy import deepcopy
+from sklearn.ensemble import RandomForestClassifier
 
-def classification_accuracy(labels, targets):
-    labels      = np.argmax(labels, axis=1);
+def classification_accuracy(labels, targets, one_hot=True):
+    if one_hot: labels = np.argmax(labels, axis=1);
     num_correct = np.add.reduce(np.array(labels == targets, dtype=np.float32));
     return num_correct / labels.shape[0];
 
@@ -57,7 +58,7 @@ if __name__ == "__main__":
     parser.add_argument("--marker_files", action="store", help="Comma-separated marker gene files", dest="marker_files", required=False);
     parser.add_argument("--train_test_val", action="store", help="Comma-separated train,test,validation split", dest="train_test_val", default="0.7,0.1,0.2");
     parser.add_argument("--num_folds", action="store", help="Number of folds of cross-validation to perform", dest="num_folds", type=int, default=1);
-    parser.add_argument("--classifier_type", action="store", choices=["NN, RF"], help="Type of classifier to use", dest="type", default="NN");
+    parser.add_argument("--classifier_type", action="store", choices=["NN", "RF"], help="Type of classifier to use", dest="type", default="NN");
     parser.add_argument("--use_marker_genes", action="store_true", help="Turn on marker gene usage", dest="use_marker_genes", default=False);
     parser.add_argument("--train_marker_coefficients", action="store_true", help="Train marker coefficients during training", dest="train_coeffs", default=False);
     parser.add_argument("--learning_rate", action="store", dest="learning_rate", help="Learning rate", default=1e-4, type=float);
@@ -163,75 +164,87 @@ if __name__ == "__main__":
         max_accuracy  = -1;
         best_model    = None;
 
-        network = neural_network(vectors[0].shape[0], num_layers=args.num_layers, hidden=args.num_hidden); 
-        network.cuda();
+        if args.type == "RF":
+            rf = RandomForestClassifier();
+            rf.fit(train_vectors, train_labels);
 
-        optimizer = torch.optim.Adam(network.parameters(), lr=args.learning_rate);
+            val_predictions = rf.predict(val_vectors);
 
-        # Train-test iterations
-        for j in range(args.num_epochs):
+            val_accuracy    = classification_accuracy(val_predictions, val_labels, one_hot=False); 
 
-            def decide_num_batches(batch_size, vecs):
-                num_batches = vecs.shape[0] // batch_size;
+            print("Obtained validation accuracy %f after fold %d"%(val_accuracy, i));
 
-                if num_batches * batch_size < vecs.shape[0]:
-                    num_batches += 1;
+            average_validation += val_accuracy;
+        else:
+            network = neural_network(vectors[0].shape[0], num_layers=args.num_layers, hidden=args.num_hidden); 
+            network.cuda();
 
-                return num_batches;
+            optimizer = torch.optim.Adam(network.parameters(), lr=args.learning_rate);
 
-            num_batches = decide_num_batches(args.batch_size, train_vectors);
+            # Train-test iterations
+            for j in range(args.num_epochs):
 
-            network.train(True);
+                def decide_num_batches(batch_size, vecs):
+                    num_batches = vecs.shape[0] // batch_size;
 
-            # Train iterations
-            for k in range(num_batches):
-                batch_start = k * args.batch_size;
-                batch_end   = min((k + 1) * args.batch_size, train_vectors.shape[0]);
+                    if num_batches * batch_size < vecs.shape[0]:
+                        num_batches += 1;
 
-                input_tensors = train_vectors[batch_start:batch_end];
-                input_labels  = train_labels[batch_start:batch_end];
-                predictions   = network(torch.autograd.Variable(torch.from_numpy(input_tensors).float().cuda()));
-                targets       = torch.autograd.Variable(torch.from_numpy(input_labels).cuda());
+                    return num_batches;
 
-                criterion     = torch.nn.CrossEntropyLoss();
-                loss_function = criterion(predictions, targets);
+                num_batches = decide_num_batches(args.batch_size, train_vectors);
 
-                optimizer.zero_grad();
-                loss_function.backward();
-                optimizer.step();
+                network.train(True);
+
+                # Train iterations
+                for k in range(num_batches):
+                    batch_start = k * args.batch_size;
+                    batch_end   = min((k + 1) * args.batch_size, train_vectors.shape[0]);
+
+                    input_tensors = train_vectors[batch_start:batch_end];
+                    input_labels  = train_labels[batch_start:batch_end];
+                    predictions   = network(torch.autograd.Variable(torch.from_numpy(input_tensors).float().cuda()));
+                    targets       = torch.autograd.Variable(torch.from_numpy(input_labels).cuda());
+
+                    criterion     = torch.nn.CrossEntropyLoss();
+                    loss_function = criterion(predictions, targets);
+
+                    optimizer.zero_grad();
+                    loss_function.backward();
+                    optimizer.step();
+
+                network.train(False);
+
+                # Train accuracy
+                train_predictions = network(torch.autograd.Variable(torch.from_numpy(train_vectors)).float().cuda());
+                train_accuracy    = classification_accuracy(train_predictions.cpu().data.numpy(), train_labels);
+
+                # Testing
+                test_predictions = network(torch.autograd.Variable(torch.from_numpy(test_vectors)).float().cuda());
+                test_accuracy    = classification_accuracy(test_predictions.cpu().data.numpy(), test_labels);
+
+                if test_accuracy > max_accuracy:
+                    max_accuracy = test_accuracy;
+                    best_model   = deepcopy(network.state_dict());
+
+                print("Completed epoch %d, obtained train, test accuracy %f,%f"%(j,train_accuracy,test_accuracy));
+
+            # Validation iterations
+            val_model = network.load_state_dict(best_model);
 
             network.train(False);
 
-            # Train accuracy
-            train_predictions = network(torch.autograd.Variable(torch.from_numpy(train_vectors)).float().cuda());
-            train_accuracy    = classification_accuracy(train_predictions.cpu().data.numpy(), train_labels);
-
-            # Testing
-            test_predictions = network(torch.autograd.Variable(torch.from_numpy(test_vectors)).float().cuda());
+            test_predictions = network(torch.autograd.Variable(torch.from_numpy(test_vectors).float().cuda()));
             test_accuracy    = classification_accuracy(test_predictions.cpu().data.numpy(), test_labels);
 
-            if test_accuracy > max_accuracy:
-                max_accuracy = test_accuracy;
-                best_model   = deepcopy(network.state_dict());
+            print("Fold %d sanity check: Validation model has test accuracy %f"%(i, test_accuracy));
 
-            print("Completed epoch %d, obtained train, test accuracy %f,%f"%(j,train_accuracy,test_accuracy));
+            val_predictions = network(torch.autograd.Variable(torch.from_numpy(val_vectors).float().cuda()));
+            val_accuracy    = classification_accuracy(val_predictions.cpu().data.numpy(), val_labels);
 
-        # Validation iterations
-        val_model = network.load_state_dict(best_model);
+            print("Fold %d has validation accuracy %f"%(i, val_accuracy));
 
-        network.train(False);
-
-        test_predictions = network(torch.autograd.Variable(torch.from_numpy(test_vectors).float().cuda()));
-        test_accuracy    = classification_accuracy(test_predictions.cpu().data.numpy(), test_labels);
-
-        print("Fold %d sanity check: Validation model has test accuracy %f"%(i, test_accuracy));
-
-        val_predictions = network(torch.autograd.Variable(torch.from_numpy(val_vectors).float().cuda()));
-        val_accuracy    = classification_accuracy(val_predictions.cpu().data.numpy(), val_labels);
-
-        print("Fold %d has validation accuracy %f"%(i, val_accuracy));
-
-        average_validation += val_accuracy;
+            average_validation += val_accuracy;
 
         # Circular right shift all vectors and labels by nval items
         vectors = np.roll(vectors, nval, axis=0);
