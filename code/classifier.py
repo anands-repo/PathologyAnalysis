@@ -169,7 +169,6 @@ if __name__ == "__main__":
             rf.fit(train_vectors, train_labels);
 
             val_predictions = rf.predict(val_vectors);
-
             val_accuracy    = classification_accuracy(val_predictions, val_labels, one_hot=False); 
 
             print("Obtained validation accuracy %f after fold %d"%(val_accuracy, i));
