@@ -34,6 +34,10 @@ noise_vectors = scipy.stats.multivariate_normal.rvs(np.zeros(dtype=np.float32, s
 # Generate samples
 samples = np.matmul(sample_compositions, expression) + noise_vectors;
 
+# Meta-data
+meta = {'alpha':np.array(alpha), 'scale':args.scale, 'composition':args.composition};
+
 # Dump samples to file
+np.save(args.output_prefix + "_compositions", sample_compositions);
 np.save(args.output_prefix, samples);
-np.savez(args.output_prefix + "_composition", a=np.array(alpha), b=args.scale);
+np.savez(args.output_prefix + "_metadata", **meta);
