@@ -58,7 +58,8 @@ if __name__ == "__main__":
 
         marker_vectors.append(np.reshape(population_signal_for_marker,(num_patients,1)));
 
-    celltype_compositions = np.concatenate(marker_vectors, axis=1);
+    celltype_compositions_unnormalized = np.concatenate(marker_vectors, axis=1);
+    celltype_compositions              = celltype_compositions_unnormalized / np.expand_dims(np.add.reduce(celltype_compositions_unnormalized, axis=1), axis=1);
     
     """ Obtain complete gene expression data """
     expression = dataset.gene_expression(patient_ids);
@@ -77,3 +78,4 @@ if __name__ == "__main__":
     print("Dumping weights of linear regressor of shape %s to %s"%(str(weights.shape), args.output_prefix + ".npy"));
 
     np.save(args.output_prefix, weights);
+    np.save(args.output_prefix + "_composition", celltype_compositions);
