@@ -17,7 +17,7 @@ class neural_network(torch.nn.Module):
         self.layers = [];
 
         linear = torch.nn.Linear(dim, hidden if num_layers > 1 else 2);
-        linear.weight.data.normal_(0.0,0.1);
+        linear.weight.data.normal_(0.0,0.05);
         linear.bias.data.fill_(0.1);
 
         self.layers.append(linear);
@@ -25,13 +25,13 @@ class neural_network(torch.nn.Module):
         if num_layers > 1:
             for i in range(num_layers-2):
                 linear = torch.nn.Linear(hidden, hidden);
-                linear.weight.data.normal_(0.0,0.1);
+                linear.weight.data.normal_(0.0,0.05);
                 linear.bias.data.fill_(0.1);
 
                 self.layers.append(linear);
 
             linear = torch.nn.Linear(hidden, 2);
-            linear.weight.data.normal_(0.0,0.1);
+            linear.weight.data.normal_(0.0,0.05);
             linear.bias.data.fill_(0.1);
 
             self.layers.append(linear);
@@ -65,7 +65,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", action="store", type=int, dest="batch_size", help="Batch size to use for training", default=10);
     parser.add_argument("--num_epochs", action="store", type=int, dest="num_epochs", help="Number of epochs to train", default=10);
     parser.add_argument("--num_layers", action="store", type=int, dest="num_layers", help="If using a neural network, how many layers", default=2);
-    parser.add_argument("--num_hidden", action="store", type=int, dest="num_hidden", help="If using a neural network, how many hidden units", default=2);
+    parser.add_argument("--num_hidden", action="store", type=int, dest="num_hidden", help="If using a neural network, how many hidden units", default=256);
+    parser.add_argument("--late_stop", action="store_true", dest="late_stop", help="Late stopping for neural networks", default=False);
 
     args = parser.parse_args();
 
@@ -84,6 +85,9 @@ if __name__ == "__main__":
 
             if items[1] in neg_group:
                 neg_ids.append(items[0]);
+
+    num_pos_patients = len(pos_ids);
+    num_neg_patients = len(neg_ids);
 
     print("Found %d patients for groups %s in positive group and %d patients for groups %s in negative group"%(len(pos_ids),args.pos_group,len(neg_ids),args.neg_group));
 
@@ -120,8 +124,8 @@ if __name__ == "__main__":
             expression_vectors_pos = dataset.gene_specific_expression(pos_ids, marker_list);
             expression_vectors_neg = dataset.gene_specific_expression(neg_ids, marker_list);
 
-            expression_vectors_pos = np.reshape(np.add.reduce(expression_vectors_pos, axis=1), (expression_vectors_pos.shape[0],1));
-            expression_vectors_neg = np.reshape(np.add.reduce(expression_vectors_neg, axis=1), (expression_vectors_neg.shape[0],1));
+            expression_vectors_pos = np.reshape(np.add.reduce(expression_vectors_pos, axis=1), (num_pos_patients,1)) / len(marker_list);
+            expression_vectors_neg = np.reshape(np.add.reduce(expression_vectors_neg, axis=1), (num_neg_patients,1)) / len(marker_list);
 
             pos_vectors.append(expression_vectors_pos)
             neg_vectors.append(expression_vectors_neg);
@@ -222,9 +226,14 @@ if __name__ == "__main__":
                 test_predictions = network(torch.autograd.Variable(torch.from_numpy(test_vectors)).float().cuda());
                 test_accuracy    = classification_accuracy(test_predictions.cpu().data.numpy(), test_labels);
 
-                if test_accuracy > max_accuracy:
-                    max_accuracy = test_accuracy;
-                    best_model   = deepcopy(network.state_dict());
+                if args.late_stop:
+                    if test_accuracy >= max_accuracy:
+                        max_accuracy = test_accuracy;
+                        best_model   = deepcopy(network.state_dict());
+                else:
+                    if test_accuracy > max_accuracy:
+                        max_accuracy = test_accuracy;
+                        best_model   = deepcopy(network.state_dict());
 
                 print("Completed epoch %d, obtained train, test accuracy %f,%f"%(j,train_accuracy,test_accuracy));
 
