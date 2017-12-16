@@ -35,7 +35,11 @@ if __name__ == "__main__":
     parser.add_argument("--num_epochs", action="store", type=int, dest="num_epochs", help="Number of epochs to train", default=10);
     parser.add_argument("--num_layers", action="store", type=int, dest="num_layers", help="If using a neural network, how many layers", default=2);
     parser.add_argument("--num_hidden", action="store", type=int, dest="num_hidden", help="If using a neural network, how many hidden units", default=256);
-    parser.add_argument("--late_stop", action="store_true", dest="late_stop", help="Late stopping for neural networks", default=False);
+    parser.add_argument("--loss", action="store", dest="loss", choices=["CE","MSE"], help="Loss function for NN", default="CE");
+    parser.add_argument("--stop_type", action="store", dest="stop_type", choices=["late_stop", "early_stop", "take_last"], \
+                                help="Stop criterion for NN", default="early_stop");
+    parser.add_argument("--dropout", action="store", dest="dropout", type=float, help="Dropout regularizer for NN", required=False);
+    parser.add_argument("--bn", action="store_true", dest="bn", help="Turn on batch-normalization for NN", default=False);
 
     args = parser.parse_args();
 
@@ -170,7 +174,7 @@ if __name__ == "__main__":
             acc = models = predictions = None;
 
             if args.type == "NN":
-                acc, models, predictions_ = train_nn(args.num_layers, args.num_hidden, args.learning_rate, args.num_epochs, args.batch_size, folds, args.late_stop);
+                acc, models, predictions_ = train_nn(args.num_layers, args.num_hidden, args.learning_rate, args.num_epochs, args.batch_size, folds, args.stop_type, args.loss, dropout=args.dropout, bn=args.bn);
 
                 predictions = predictions_;
 
@@ -220,7 +224,7 @@ if __name__ == "__main__":
             folds.append([(training_data, labels[tr_]), (test_data, labels[te_]), (val_data, labels[va_])]);
 
         if args.ensemble_learner == "NN":
-            acc, models, predictions = train_nn(args.num_layers, args.num_hidden, args.learning_rate, args.num_epochs, args.batch_size, folds, args.late_stop);
+            acc, models, predictions = train_nn(args.num_layers, args.num_hidden, args.learning_rate, args.num_epochs, args.batch_size, folds, args.stop_type, args.loss, dropout=args.dropout, bn=args.bn);
         elif args.ensemble_learner == "RF":
             acc, models, predictions = train_rf(folds);
         else:
