@@ -1,189 +1,9 @@
 import numpy as np
-import torch
 import argparse
 from read_gene_expression import gene_expression as reader
-from copy import deepcopy
-from sklearn.ensemble import RandomForestClassifier
 from celltype_expression import celltype_signals
 from sklearn.model_selection import KFold
-
-def classification_accuracy(labels, targets, one_hot=True):
-    if one_hot: labels = np.argmax(labels, axis=1);
-    num_correct = np.add.reduce(np.array(labels == targets, dtype=np.float32));
-    return num_correct / labels.shape[0];
-
-class neural_network(torch.nn.Module):
-    def __init__(self, dim, num_layers=2, hidden=256):
-        super().__init__();
-
-        self.layers = [];
-
-        linear = torch.nn.Linear(dim, hidden if num_layers > 1 else 2);
-        linear.weight.data.normal_(0.0,0.05);
-        linear.bias.data.fill_(0.1);
-
-        self.layers.append(linear);
-
-        if num_layers > 1:
-            for i in range(num_layers-2):
-                linear = torch.nn.Linear(hidden, hidden);
-                linear.weight.data.normal_(0.0,0.05);
-                linear.bias.data.fill_(0.1);
-
-                self.layers.append(linear);
-
-            linear = torch.nn.Linear(hidden, 2);
-            linear.weight.data.normal_(0.0,0.05);
-            linear.bias.data.fill_(0.1);
-
-            self.layers.append(linear);
-
-        for i, linear in enumerate(self.layers):
-            setattr(self, "linear"+ str(i), linear);
-
-    def forward(self, tensor):
-        o = tensor;
-
-        for i, layer in enumerate(self.layers):
-            o_ = layer(o);
-            o  = o_ if i == len(self.layers)-1 else torch.nn.functional.relu(o_);
-
-        return o;
-
-def train_nn(num_layers, num_hidden, learning_rate, num_epochs, batch_size, folds):
-    # Return the model picked in each fold, and the train, test, val predictions of the model in each case
-    models       = [];
-    predictions_ = [];
-
-    average_validation = 0;
-
-    for i, fold in enumerate(folds):
-        train_vectors = fold[0][0];
-        train_labels  = fold[0][1];
-        test_vectors  = fold[1][0];
-        test_labels   = fold[1][1];
-        val_vectors   = fold[2][0];
-        val_labels    = fold[2][1];
-
-        print(train_vectors.shape);
-
-        print(train_labels);
-
-        max_accuracy  = -1;
-        best_model    = None;
-
-        network = neural_network(train_vectors.shape[1], num_layers=num_layers, hidden=num_hidden); 
-        network.cuda();
-
-        optimizer = torch.optim.Adam(network.parameters(), lr=learning_rate);
-
-        # Train-test iterations
-        for j in range(num_epochs):
-
-            def decide_num_batches(batch_size, vecs):
-                num_batches = vecs.shape[0] // batch_size;
-
-                if num_batches * batch_size < vecs.shape[0]:
-                    num_batches += 1;
-
-                return num_batches;
-
-            num_batches = decide_num_batches(batch_size, train_vectors);
-
-            network.train(True);
-
-            # Train iterations
-            for k in range(num_batches):
-                batch_start = k * args.batch_size;
-                batch_end   = min((k + 1) * args.batch_size, train_vectors.shape[0]);
-
-                input_tensors = train_vectors[batch_start:batch_end];
-                input_labels  = train_labels[batch_start:batch_end];
-                predictions   = network(torch.autograd.Variable(torch.from_numpy(input_tensors).float().cuda()));
-                targets       = torch.autograd.Variable(torch.from_numpy(input_labels).cuda());
-
-                criterion     = torch.nn.CrossEntropyLoss();
-                loss_function = criterion(predictions, targets);
-
-                optimizer.zero_grad();
-                loss_function.backward();
-                optimizer.step();
-
-            network.train(False);
-
-            # Train accuracy
-            train_predictions = network(torch.autograd.Variable(torch.from_numpy(train_vectors)).float().cuda());
-            train_accuracy    = classification_accuracy(train_predictions.cpu().data.numpy(), train_labels);
-
-            # Testing
-            test_predictions = network(torch.autograd.Variable(torch.from_numpy(test_vectors)).float().cuda());
-            test_accuracy    = classification_accuracy(test_predictions.cpu().data.numpy(), test_labels);
-
-            if args.late_stop:
-                if test_accuracy >= max_accuracy:
-                    max_accuracy = test_accuracy;
-                    best_model   = deepcopy(network.state_dict());
-            else:
-                if test_accuracy > max_accuracy:
-                    max_accuracy = test_accuracy;
-                    best_model   = deepcopy(network.state_dict());
-
-            print("Completed epoch %d, obtained train, test accuracy %f,%f"%(j,train_accuracy,test_accuracy));
-
-        # Validation iterations
-        val_model = network.load_state_dict(best_model);
-
-        network.train(False);
-
-        test_predictions = network(torch.autograd.Variable(torch.from_numpy(test_vectors).float().cuda()));
-        test_accuracy    = classification_accuracy(test_predictions.cpu().data.numpy(), test_labels);
-
-        print("Fold %d sanity check: Validation model has test accuracy %f"%(i, test_accuracy));
-
-        val_predictions = network(torch.autograd.Variable(torch.from_numpy(val_vectors).float().cuda()));
-        val_accuracy    = classification_accuracy(val_predictions.cpu().data.numpy(), val_labels);
-
-        print("Fold %d has validation accuracy %f"%(i, val_accuracy));
-
-        train_predictions = network(torch.autograd.Variable(torch.from_numpy(train_vectors).float().cuda()));
-
-        predictions_.append((train_predictions.cpu().data.numpy(), test_predictions.cpu().data.numpy(), val_predictions.cpu().data.numpy()));
-
-        average_validation += val_accuracy;
-
-        models.append(best_model);
-
-    return average_validation / len(folds), models, predictions_;
-
-def train_rf(folds):
-    models = [];
-
-    average_validation = 0;
-    models = [];
-
-    for i, fold in enumerate(folds):
-        train_vectors = fold[0][0];
-        train_labels  = fold[0][1];
-        test_vectors  = fold[1][0];
-        test_labels   = fold[1][1];
-        val_vectors   = fold[2][0];
-        val_labels    = fold[2][1];
-
-        max_accuracy  = -1;
-
-        rf = RandomForestClassifier();
-        rf.fit(train_vectors, train_labels);
-
-        val_predictions = rf.predict(val_vectors);
-        val_accuracy    = classification_accuracy(val_predictions, val_labels, one_hot=False); 
-
-        print("Obtained validation accuracy %f after fold %d"%(val_accuracy, i));
-
-        average_validation += val_accuracy;
-
-        models.append(rf);
-
-    return average_validation / len(folds), models;
+from learners import train_nn, train_rf, train_logistic
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description = "Train and test a pathology classifier");
@@ -204,11 +24,13 @@ if __name__ == "__main__":
                             shouldn't be provided. When provided, classifiers will be \
                             trained for each cell-type with expression for that cell-type as input and class label as output.", required=False);
     parser.add_argument("--train_test_val", action="store", help="Comma-separated train,test,validation split. \
-                                For RF classifier, the val split is not meaningful", dest="train_test_val", default="0.7,0.1,0.2");
+                                For RF classifier, the test split is not meaningful", dest="train_test_val", default="0.7,0.1,0.2");
     parser.add_argument("--num_folds", action="store", help="Number of folds of cross-validation to perform", dest="num_folds", type=int, default=1);
-    parser.add_argument("--classifier_type", action="store", choices=["NN", "RF"], help="Type of classifier to use", dest="type", default="NN");
-    parser.add_argument("--train_marker_coefficients", action="store_true", help="Train marker coefficients during training", dest="train_coeffs", default=False);
-    parser.add_argument("--learning_rate", action="store", dest="learning_rate", help="Learning rate", default=1e-4, type=float);
+    parser.add_argument("--classifier_type", action="store", choices=["NN", "RF", "LR"], help="Type of classifier to use", dest="type", default="NN");
+    parser.add_argument("--ensemble_learner", action="store", choices=["LR", "RF", "NN"], dest="ensemble_learner", default="LogisticRegression", \
+                                help="Type of ensemble learner to use if cell-type specific learning is involved");
+    parser.add_argument("--ensemble_use_labels", action="store_true", dest="ensemble_use_labels", default=False, help="Use labels in ensemble learner");
+    parser.add_argument("--learning_rate", action="store", dest="learning_rate", help="Learning rate for NN", default=1e-4, type=float);
     parser.add_argument("--batch_size", action="store", type=int, dest="batch_size", help="Batch size to use for training", default=10);
     parser.add_argument("--num_epochs", action="store", type=int, dest="num_epochs", help="Number of epochs to train", default=10);
     parser.add_argument("--num_layers", action="store", type=int, dest="num_layers", help="If using a neural network, how many layers", default=2);
@@ -345,11 +167,30 @@ if __name__ == "__main__":
             for tr_, te_, va_ in fold_indices:
                 folds.append([(data[tr_], labels[tr_]), (data[te_], labels[te_]), (data[va_], labels[va_])]);
 
-            acc, models, predictions = train_nn(args.num_layers, args.num_hidden, args.learning_rate, args.num_epochs, args.batch_size, folds);
+            acc = models = predictions = None;
+
+            if args.type == "NN":
+                acc, models, predictions_ = train_nn(args.num_layers, args.num_hidden, args.learning_rate, args.num_epochs, args.batch_size, folds, args.late_stop);
+
+                predictions = predictions_;
+
+                if args.ensemble_use_labels:
+                    for k, pred in enumerate(predictions_):
+                        predictions[k] = ( \
+                             np.argmax(pred[0], axis=1), \
+                             np.argmax(pred[1], axis=1), \
+                             np.argmax(pred[2], axis=1), \
+                        );
+
+            elif args.type == "RF":
+                acc, models, predictions = train_rf(folds);
+            else:
+                acc, models, predictions = train_logistic(folds);
+
             celltype_specific_calls.append(predictions);
             print("Cross validation accuracy is %f for cell-type-specific expression for celltype %d"%(acc, i));
 
-        """ Build a logistic regressor on top of this, use neural netowrk training """
+        """ Build an ensemble learner on top of this """
         folds = [];
 
         for i, (tr_, te_, va_) in enumerate(fold_indices):
@@ -358,15 +199,31 @@ if __name__ == "__main__":
             val_data      = [];
 
             for pred in celltype_specific_calls:
-                training_data.append(pred[i][0]);
-                test_data.append(pred[i][1]);
-                val_data.append(pred[i][2]);
+                if args.type == "NN":
+                    if args.ensemble_use_labels:
+                        training_data.append(np.expand_dims(pred[i][0], axis=1));
+                        test_data.append(np.expand_dims(pred[i][1], axis=1));
+                        val_data.append(np.expand_dims(pred[i][2], axis=1));
+                    else:
+                        training_data.append(pred[i][0]);
+                        test_data.append(pred[i][1]);
+                        val_data.append(pred[i][2]);
+                else:
+                    training_data.append(np.expand_dims(pred[i][0], axis=1));
+                    test_data.append(None);
+                    val_data.append(np.expand_dims(pred[i][1], axis=1));
 
             training_data = np.concatenate(training_data, axis=1);
-            test_data     = np.concatenate(test_data, axis=1);
+            if args.type == "NN": test_data = np.concatenate(test_data, axis=1);
             val_data      = np.concatenate(val_data, axis=1);
 
             folds.append([(training_data, labels[tr_]), (test_data, labels[te_]), (val_data, labels[va_])]);
 
-        acc, models, predictions = train_nn(1, 0, args.learning_rate, args.num_epochs, args.batch_size, folds);
+        if args.ensemble_learner == "NN":
+            acc, models, predictions = train_nn(args.num_layers, args.num_hidden, args.learning_rate, args.num_epochs, args.batch_size, folds, args.late_stop);
+        elif args.ensemble_learner == "RF":
+            acc, models, predictions = train_rf(folds);
+        else:
+            acc, models, predictions = train_logistic(folds);
+            
         print("Cross validation accuracy is %f for ensemble learner on cell-type-specific classifications"%(acc));
