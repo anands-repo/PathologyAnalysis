@@ -4,6 +4,7 @@ from copy import deepcopy
 from sklearn.ensemble import RandomForestClassifier
 from celltype_expression import celltype_signals
 from sklearn.linear_model import LogisticRegression
+import sklearn.metrics as metrics
 
 def classification_accuracy(labels, targets, one_hot=True):
     if one_hot:
@@ -71,6 +72,7 @@ def train_nn(num_layers, num_hidden, learning_rate, num_epochs, batch_size, fold
     predictions_ = [];
 
     average_validation = 0;
+    average_auc        = 0;
 
     for i, fold in enumerate(folds):
         train_vectors = fold[0][0];
@@ -164,20 +166,27 @@ def train_nn(num_layers, num_hidden, learning_rate, num_epochs, batch_size, fold
 
         print("Fold %d has validation accuracy %f"%(i, val_accuracy));
 
-        train_predictions = network(torch.autograd.Variable(torch.from_numpy(train_vectors).float().cuda()));
-
-        predictions_.append((train_predictions.cpu().data.numpy(), test_predictions.cpu().data.numpy(), val_predictions.cpu().data.numpy()));
-
         average_validation += val_accuracy;
 
         models.append(best_model);
 
-    return average_validation / len(folds), models, predictions_;
+        val_predictions = val_predictions.cpu().data.numpy()[:,1];
+
+        # Find the ROC
+        fpr, tpr, thresh_ = metrics.roc_curve(val_labels, val_predictions);
+
+        # Find the AUC
+        auc = metrics.auc(fpr, tpr);
+
+        average_auc += auc;
+
+    return average_validation / len(folds), average_auc / len(folds), models;
 
 def train_logistic(folds):
     models = [];
 
     average_validation = 0;
+    average_auc        = 0;
     models = [];
 
     predictions = [];
@@ -205,14 +214,25 @@ def train_logistic(folds):
         average_validation += val_accuracy;
 
         models.append(lr);
-        predictions.append((train_predictions, val_predictions));
 
-    return average_validation / len(folds), models, predictions;
+        # model predictions to compute auc
+        prob = lr.predict_proba(val_vectors)[:,1];
+        
+        # Find the ROC
+        fpr, tpr, thresh_ = metrics.roc_curve(val_labels, prob);
+
+        # Find the AUC
+        auc = metrics.auc(fpr, tpr);
+
+        average_auc += auc;
+
+    return average_validation / len(folds), average_auc / len(folds), models; #, predictions;
 
 def train_rf(folds):
     models = [];
 
     average_validation = 0;
+    average_auc        = 0;
     models = [];
 
     predictions = [];
@@ -240,6 +260,16 @@ def train_rf(folds):
         average_validation += val_accuracy;
 
         models.append(rf);
-        predictions.append((train_predictions, val_predictions));
 
-    return average_validation / len(folds), models, predictions;
+        # model predictions to compute auc
+        prob = rf.predict_proba(val_vectors)[:,1];
+        
+        # Find the ROC
+        fpr, tpr, thresh_ = metrics.roc_curve(val_labels, prob);
+
+        # Find the AUC
+        auc = metrics.auc(fpr, tpr);
+
+        average_auc += auc;
+
+    return average_validation / len(folds), average_auc / len(folds), models; #, predictions;

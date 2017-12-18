@@ -7,21 +7,18 @@ python3 celltype_expression.py \
     --group Control \
     --meta_data /home/aramach4/Alzheimers/data/meta_data.csv \
     --marker_files $MARKERFILES \
-    --output_prefix ./celltype_expression_Control \
-    --patient_specific
+    --output_prefix ./celltype_expression_Control
 
 python3 celltype_expression.py \
     --expression /home/aramach4/Alzheimers/data/CorrectedGeneCounts.txt \
     --group AD \
     --meta_data /home/aramach4/Alzheimers/data/meta_data.csv \
     --marker_files $MARKERFILES \
-    --output_prefix ./celltype_expression_AD \
-    --patient_specific
+    --output_prefix ./celltype_expression_AD
 
 python3 celltype_expression.py \
     --expression /home/aramach4/Alzheimers/data/CorrectedGeneCounts.txt \
     --group PSP \
     --meta_data /home/aramach4/Alzheimers/data/meta_data.csv \
     --marker_files $MARKERFILES \
-    --output_prefix ./celltype_expression_PSP \
-    --patient_specific
+    --output_prefix ./celltype_expression_PSP
